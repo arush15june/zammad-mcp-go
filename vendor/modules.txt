@@ -1,0 +1,16 @@
+# github.com/AlessandroSechi/zammad-go v0.0.0-20241027101934-e9e7d13e8bd5
+## explicit; go 1.23
+github.com/AlessandroSechi/zammad-go
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
+# github.com/mark3labs/mcp-go v0.23.1
+## explicit; go 1.23
+github.com/mark3labs/mcp-go/mcp
+github.com/mark3labs/mcp-go/server
+# github.com/spf13/cast v1.7.1
+## explicit; go 1.19
+github.com/spf13/cast
+# github.com/yosida95/uritemplate/v3 v3.0.2
+## explicit; go 1.14
+github.com/yosida95/uritemplate/v3
