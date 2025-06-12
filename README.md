@@ -63,6 +63,9 @@ Tools allow the AI to perform actions or specific queries within Zammad.
 *   **`close_ticket`**: Close a ticket by setting its state to 'closed'.
     *   Requires: `ticket_id`.
     *   Optional: `note` (a closing note to add to the ticket as an internal note).
+*   **`assign_ticket`**: Assign a ticket to a specific agent user.
+    *   Requires: `ticket_id`, `agent_id`.
+    *   Optional: `note` (an assignment note to add to the ticket as an internal note).
 
 ## Prerequisites
 

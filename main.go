@@ -284,6 +284,14 @@ func registerTools(s *server.MCPServer) {
 	)
 	s.AddTool(closeTicketTool, handleCloseTicket)
 
+	assignTicketTool := mcp.NewTool("assign_ticket",
+		mcp.WithDescription("Assign a Zammad ticket to a specific agent user."),
+		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to assign.")),
+		mcp.WithNumber("agent_id", mcp.Required(), mcp.Description("The ID of the agent user to assign the ticket to.")),
+		mcp.WithString("note", mcp.Description("Optional note to add when assigning the ticket.")),
+	)
+	s.AddTool(assignTicketTool, handleAssignTicket)
+
 	// Add create_user, update_user, delete_user tools here if needed
 }
 
@@ -608,4 +616,51 @@ func handleCloseTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.C
 
 	resultData, _ := json.MarshalIndent(updatedTicket, "", "  ")
 	return mcp.NewToolResultText(fmt.Sprintf("Ticket %d closed successfully:\n%s", ticketID, string(resultData))), nil
+}
+
+func handleAssignTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	ticketID := mcp.ParseInt(request, "ticket_id", 0)
+	agentID := mcp.ParseInt(request, "agent_id", 0)
+	note := mcp.ParseString(request, "note", "")
+
+	if ticketID <= 0 || agentID <= 0 {
+		return mcp.NewToolResultError("Missing or invalid required arguments: ticket_id and agent_id (both must be positive numbers)"), nil
+	}
+
+	// Update the ticket to assign it to the specified agent
+	ticket := zammad.Ticket{
+		OwnerID: agentID,
+	}
+
+	updatedTicket, err := zammadClient.TicketUpdate(ticketID, ticket)
+	if err != nil {
+		log.Printf("Error assigning ticket %d to agent %d in Zammad: %v", ticketID, agentID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to assign ticket %d to agent %d", ticketID, agentID), err), nil
+	}
+
+	log.Printf("Successfully assigned ticket ID %d to agent ID %d", ticketID, agentID)
+
+	// If a note was provided, add it as an internal note
+	if note != "" {
+		article := zammad.TicketArticle{
+			TicketID: ticketID,
+			Body:     note,
+			Type:     "note",
+			Internal: true,
+			Subject:  "Ticket assigned",
+		}
+
+		createdArticle, err := zammadClient.TicketArticleCreate(article)
+		if err != nil {
+			log.Printf("Warning: Ticket %d assigned successfully, but failed to add assignment note: %v", ticketID, err)
+			// Don't fail the whole operation if note creation fails
+		} else {
+			log.Printf("Added assignment note (Article ID %d) to ticket ID %d", createdArticle.ID, ticketID)
+		}
+	}
+
+	resultData, _ := json.MarshalIndent(updatedTicket, "", "  ")
+	return mcp.NewToolResultText(fmt.Sprintf("Ticket %d assigned to agent %d successfully:\n%s", ticketID, agentID, string(resultData))), nil
 }
