@@ -66,6 +66,8 @@ Tools allow the AI to perform actions or specific queries within Zammad.
 *   **`assign_ticket`**: Assign a ticket to a specific agent user.
     *   Requires: `ticket_id`, `agent_id`.
     *   Optional: `note` (an assignment note to add to the ticket as an internal note).
+*   **`add_tag_to_ticket`**: Add a tag to a ticket.
+    *   Requires: `ticket_id`, `tag_name`.
 
 ## Prerequisites
 
