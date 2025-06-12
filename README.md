@@ -68,6 +68,12 @@ Tools allow the AI to perform actions or specific queries within Zammad.
     *   Optional: `note` (an assignment note to add to the ticket as an internal note).
 *   **`add_tag_to_ticket`**: Add a tag to a ticket.
     *   Requires: `ticket_id`, `tag_name`.
+*   **`get_ticket_tags`**: Get all tags currently assigned to a specific ticket.
+    *   Requires: `ticket_id`.
+*   **`list_all_tags`**: List all tags available in the Zammad system.
+    *   Requires: `admin.tag` permission.
+*   **`search_tags`**: Search for tags by name in the Zammad system.
+    *   Requires: `search_term`.
 
 ## Prerequisites
 

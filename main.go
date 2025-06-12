@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -50,7 +51,7 @@ func main() {
 		server.WithLogging(),                        // Enable MCP logging notifications
 		server.WithRecovery(),                       // Recover from panics in handlers
 		// Updated instructions to include user tools
-		server.WithInstructions("This server provides access to Zammad tickets and users via resources and tools (e.g., create_ticket, get_ticket, search_tickets, get_user, search_users)."),
+		server.WithInstructions("This server provides access to Zammad tickets, users, and tags via resources and tools (e.g., create_ticket, get_ticket, search_tickets, get_user, search_users, add_tag_to_ticket, get_ticket_tags)."),
 	)
 
 	// --- Register MCP Resources ---
@@ -298,6 +299,23 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("tag_name", mcp.Required(), mcp.Description("The name of the tag to add to the ticket.")),
 	)
 	s.AddTool(addTagToTicketTool, handleAddTagToTicket)
+
+	getTicketTagsTool := mcp.NewTool("get_ticket_tags",
+		mcp.WithDescription("Get all tags currently assigned to a specific ticket."),
+		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to get tags for.")),
+	)
+	s.AddTool(getTicketTagsTool, handleGetTicketTags)
+
+	listAllTagsTool := mcp.NewTool("list_all_tags",
+		mcp.WithDescription("List all tags available in the Zammad system (requires admin.tag permission)."),
+	)
+	s.AddTool(listAllTagsTool, handleListAllTags)
+
+	searchTagsTool := mcp.NewTool("search_tags",
+		mcp.WithDescription("Search for tags by name in the Zammad system."),
+		mcp.WithString("search_term", mcp.Required(), mcp.Description("The search term to look for in tag names.")),
+	)
+	s.AddTool(searchTagsTool, handleSearchTags)
 
 	// Add create_user, update_user, delete_user tools here if needed
 }
@@ -670,49 +688,21 @@ func handleAssignTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 		return mcp.NewToolResultError("Missing or invalid required arguments: ticket_id and agent_id (both must be positive numbers)"), nil
 	}
 
-	// Update the ticket to assign it to the specified agent
-	// We need to make a direct API call to avoid sending empty string fields
-	// that might cause validation errors in Zammad
-
-	updateData := map[string]interface{}{
-		"owner_id": agentID,
-	}
-
-	req, err := zammadClient.NewRequest("PUT", fmt.Sprintf("%s/api/v1/tickets/%d", zammadClient.Url, ticketID), updateData)
+	// First, get the current ticket to preserve existing data
+	currentTicket, err := zammadClient.TicketShow(ticketID)
 	if err != nil {
-		log.Printf("Error creating request to assign ticket %d: %v", ticketID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to create request to assign ticket %d", ticketID), err), nil
+		log.Printf("Error fetching current ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to fetch ticket %d", ticketID), err), nil
 	}
 
-	// Apply authentication headers manually (matching the client's sendWithAuth logic)
-	if zammadClient.Username != "" && zammadClient.Password != "" {
-		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
-	}
-	if zammadClient.Token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
-	}
-	if zammadClient.OAuth != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
-	}
+	// Update only the owner_id field, preserving other ticket data
+	currentTicket.OwnerID = agentID
 
-	// Make the request
-	resp, err := zammadClient.Client.Do(req)
+	// Use the Zammad client's TicketUpdate method instead of manual API call
+	updatedTicket, err := zammadClient.TicketUpdate(ticketID, currentTicket)
 	if err != nil {
 		log.Printf("Error assigning ticket %d to agent %d: %v", ticketID, agentID, err)
 		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to assign ticket %d to agent %d", ticketID, agentID), err), nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error response from Zammad when assigning ticket %d: status %d", ticketID, resp.StatusCode)
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to assign ticket %d: HTTP status %d", ticketID, resp.StatusCode)), nil
-	}
-
-	// Decode the response
-	var updatedTicket zammad.Ticket
-	if err := json.NewDecoder(resp.Body).Decode(&updatedTicket); err != nil {
-		log.Printf("Error decoding response when assigning ticket %d: %v", ticketID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to decode response when assigning ticket %d", ticketID), err), nil
 	}
 
 	log.Printf("Successfully assigned ticket ID %d to agent ID %d", ticketID, agentID)
@@ -750,47 +740,174 @@ func handleAddTagToTicket(ctx context.Context, request mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultError("Missing or invalid required arguments: ticket_id (must be positive) and tag_name (must not be empty)"), nil
 	}
 
-	// Add tag to ticket using Zammad API
-	// According to Zammad API documentation, we need to POST to /api/v1/tags/add
-	// with the object type, object ID, and tag name
+	// Validate tag name - basic validation for common issues
+	if len(tagName) > 100 {
+		return mcp.NewToolResultError("Tag name is too long (maximum 100 characters)"), nil
+	}
 
+	// Log the exact data being sent for debugging
 	tagData := map[string]interface{}{
 		"object": "Ticket",
 		"o_id":   ticketID,
-		"name":   tagName,
+		"item":   tagName,
 	}
+	log.Printf("Adding tag to ticket - Data: %+v", tagData)
 
-	req, err := zammadClient.NewRequest("POST", fmt.Sprintf("%s/api/v1/tags/add", zammadClient.Url), tagData)
+	// Add tag using manual API call with proper authentication
+	err := func() error {
+		req, err := zammadClient.NewRequest("POST", fmt.Sprintf("%s/api/v1/tags/add", zammadClient.Url), tagData)
+		if err != nil {
+			return err
+		}
+
+		// Apply authentication headers manually but more carefully
+		if zammadClient.Username != "" && zammadClient.Password != "" {
+			req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+		}
+		if zammadClient.Token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+		}
+		if zammadClient.OAuth != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+		}
+
+		// Make the request
+		resp, err := zammadClient.Client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		// Read response body for debugging
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Error reading response body: %v", err)
+			bodyBytes = []byte("unable to read response")
+		}
+		bodyString := string(bodyBytes)
+
+		log.Printf("Tag add response: Status %d, Body: %s", resp.StatusCode, bodyString)
+
+		// Zammad API should return 201 Created for successful tag addition
+		if resp.StatusCode == http.StatusCreated {
+			log.Printf("Successfully added tag '%s' to ticket ID %d (Status: 201)", tagName, ticketID)
+			return nil
+		} else if resp.StatusCode == http.StatusOK {
+			log.Printf("Tag '%s' added to ticket ID %d (Status: 200 - may have already existed)", tagName, ticketID)
+			return nil
+		} else {
+			log.Printf("Error response from Zammad when adding tag '%s' to ticket %d: status %d, body: %s", tagName, ticketID, resp.StatusCode, bodyString)
+			return fmt.Errorf("HTTP status %d: %s", resp.StatusCode, bodyString)
+		}
+	}()
+
 	if err != nil {
-		log.Printf("Error creating request to add tag '%s' to ticket %d: %v", tagName, ticketID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to create request to add tag to ticket %d", ticketID), err), nil
-	}
-
-	// Apply authentication headers manually (matching the client's sendWithAuth logic)
-	if zammadClient.Username != "" && zammadClient.Password != "" {
-		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
-	}
-	if zammadClient.Token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
-	}
-	if zammadClient.OAuth != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
-	}
-
-	// Make the request
-	resp, err := zammadClient.Client.Do(req)
-	if err != nil {
-		log.Printf("Error adding tag '%s' to ticket %d: %v", tagName, ticketID, err)
 		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to add tag '%s' to ticket %d", tagName, ticketID), err), nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		log.Printf("Error response from Zammad when adding tag '%s' to ticket %d: status %d", tagName, ticketID, resp.StatusCode)
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to add tag '%s' to ticket %d: HTTP status %d", tagName, ticketID, resp.StatusCode)), nil
+	// Optional verification (can be disabled if it causes issues)
+	if true { // Set to false to disable verification
+		currentTags, err := zammadClient.TicketTagByTicket(ticketID)
+		if err != nil {
+			log.Printf("Warning: Tag added, but verification failed: %v", err)
+			return mcp.NewToolResultText(fmt.Sprintf("Tag '%s' added to ticket %d (verification failed: %v)", tagName, ticketID, err)), nil
+		}
+
+		// Check if our tag is in the list
+		tagFound := false
+		for _, tag := range currentTags {
+			if tag.Name == tagName {
+				tagFound = true
+				break
+			}
+		}
+
+		if tagFound {
+			return mcp.NewToolResultText(fmt.Sprintf("Tag '%s' successfully added to ticket %d (verified)", tagName, ticketID)), nil
+		} else {
+			log.Printf("Warning: Tag '%s' was added to ticket %d but not found in verification list", tagName, ticketID)
+			return mcp.NewToolResultText(fmt.Sprintf("Tag '%s' added to ticket %d (not found in verification - may need time to propagate)", tagName, ticketID)), nil
+		}
+	} else {
+		return mcp.NewToolResultText(fmt.Sprintf("Tag '%s' added to ticket %d", tagName, ticketID)), nil
+	}
+}
+
+// handleGetTicketTags retrieves all tags for a specific ticket
+func handleGetTicketTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	ticketID := mcp.ParseInt(request, "ticket_id", 0)
+	if ticketID <= 0 {
+		return mcp.NewToolResultError("Missing or invalid required argument: ticket_id (must be positive)"), nil
 	}
 
-	log.Printf("Successfully added tag '%s' to ticket ID %d", tagName, ticketID)
+	tags, err := zammadClient.TicketTagByTicket(ticketID)
+	if err != nil {
+		log.Printf("Error fetching tags for ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to get tags for ticket %d", ticketID), err), nil
+	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Tag '%s' added successfully to ticket %d", tagName, ticketID)), nil
+	if len(tags) == 0 {
+		return mcp.NewToolResultText(fmt.Sprintf("No tags found for ticket %d", ticketID)), nil
+	}
+
+	resultData, err := json.MarshalIndent(tags, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling tags for ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr("Failed to format tag results", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Tags for ticket %d (%d found):\n%s", ticketID, len(tags), string(resultData))), nil
+}
+
+// handleListAllTags lists all tags in the Zammad system
+func handleListAllTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	tags, err := zammadClient.TagAdminList()
+	if err != nil {
+		log.Printf("Error fetching all tags: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to list all tags", err), nil
+	}
+
+	if len(tags) == 0 {
+		return mcp.NewToolResultText("No tags found in the system"), nil
+	}
+
+	resultData, err := json.MarshalIndent(tags, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling all tags: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to format tag list", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("All tags in system (%d found):\n%s", len(tags), string(resultData))), nil
+}
+
+// handleSearchTags searches for tags by name
+func handleSearchTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	searchTerm := mcp.ParseString(request, "search_term", "")
+	if searchTerm == "" {
+		return mcp.NewToolResultError("Missing required argument: search_term"), nil
+	}
+
+	tags, err := zammadClient.TagSearch(searchTerm)
+	if err != nil {
+		log.Printf("Error searching tags with term '%s': %v", searchTerm, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to search tags with term '%s'", searchTerm), err), nil
+	}
+
+	if len(tags) == 0 {
+		return mcp.NewToolResultText(fmt.Sprintf("No tags found matching search term '%s'", searchTerm)), nil
+	}
+
+	resultData, err := json.MarshalIndent(tags, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling tag search results: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to format tag search results", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Tags matching '%s' (%d found):\n%s", searchTerm, len(tags), string(resultData))), nil
 }
