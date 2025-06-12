@@ -1,2 +1,5 @@
 *.exe# Added by goreleaser init:
 dist/
+.idea
+claude.md
+.claude
