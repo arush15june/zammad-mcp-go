@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 
@@ -238,6 +239,17 @@ func registerTools(s *server.MCPServer) {
 	addNoteTool := mcp.NewTool("add_note_to_ticket" /* ... */)
 	s.AddTool(addNoteTool, handleAddNoteToTicket)
 
+	replyToTicketTool := mcp.NewTool("reply_to_ticket",
+		mcp.WithDescription("Reply to a Zammad ticket by email."),
+		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to reply to.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("The email body/content.")),
+		mcp.WithString("to", mcp.Description("The recipient email address(es). If not provided, will use the ticket customer's email.")),
+		mcp.WithString("cc", mcp.Description("CC email address(es).")),
+		mcp.WithString("subject", mcp.Description("Email subject. If not provided, will use the ticket subject with 'Re:' prefix.")),
+		mcp.WithBoolean("internal", mcp.Description("Whether this is an internal email (default: false).")),
+	)
+	s.AddTool(replyToTicketTool, handleReplyToTicket)
+
 	getTicketTool := mcp.NewTool("get_ticket",
 		mcp.WithDescription("Retrieves details for a specific Zammad ticket by its ID."),
 		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to retrieve.")),
@@ -248,6 +260,7 @@ func registerTools(s *server.MCPServer) {
 	getUserTool := mcp.NewTool("get_user",
 		mcp.WithDescription("Retrieves details for a specific Zammad user by their ID."),
 		mcp.WithNumber("user_id", mcp.Required(), mcp.Description("The ID of the user to retrieve.")),
+		mcp.WithBoolean("with_extended_data", mcp.Description("If true, returns all user data including custom fields. If false (default), returns only standard fields.")),
 	)
 	s.AddTool(getUserTool, handleGetUser) // Register the new handler
 
@@ -263,6 +276,13 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket whose articles are to be retrieved.")),
 	)
 	s.AddTool(getTicketArticlesTool, handleGetTicketArticles)
+
+	closeTicketTool := mcp.NewTool("close_ticket",
+		mcp.WithDescription("Close a Zammad ticket by setting its state to 'closed'."),
+		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to close.")),
+		mcp.WithString("note", mcp.Description("Optional closing note to add to the ticket.")),
+	)
+	s.AddTool(closeTicketTool, handleCloseTicket)
 
 	// Add create_user, update_user, delete_user tools here if needed
 }
@@ -330,6 +350,53 @@ func handleAddNoteToTicket(ctx context.Context, request mcp.CallToolRequest) (*m
 	return mcp.NewToolResultText(fmt.Sprintf("Note added successfully to ticket %d:\n%s", ticketID, string(resultData))), nil
 }
 
+func handleReplyToTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+	ticketID := mcp.ParseInt(request, "ticket_id", 0)
+	body := mcp.ParseString(request, "body", "")
+	to := mcp.ParseString(request, "to", "")
+	cc := mcp.ParseString(request, "cc", "")
+	subject := mcp.ParseString(request, "subject", "")
+	internal := mcp.ParseBoolean(request, "internal", false)
+
+	if ticketID <= 0 || body == "" {
+		return mcp.NewToolResultError("Missing or invalid required arguments: ticket_id, body"), nil
+	}
+
+	// If subject is not provided, fetch the ticket to get its subject
+	if subject == "" {
+		ticket, err := zammadClient.TicketShow(ticketID)
+		if err != nil {
+			log.Printf("Error fetching ticket %d to get subject: %v", ticketID, err)
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to fetch ticket %d", ticketID), err), nil
+		}
+		subject = fmt.Sprintf("Re: %s", ticket.Title)
+	}
+
+	// Create email article
+	article := zammad.TicketArticle{
+		TicketID:    ticketID,
+		Body:        body,
+		Type:        "email",
+		Sender:      "Agent",
+		Subject:     subject,
+		To:          to,
+		Cc:          cc,
+		Internal:    internal,
+		ContentType: "text/html",
+	}
+
+	createdArticle, err := zammadClient.TicketArticleCreate(article)
+	if err != nil {
+		log.Printf("Error sending email reply to ticket %d in Zammad: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to send email reply to ticket %d", ticketID), err), nil
+	}
+
+	log.Printf("Successfully sent email reply (Article ID %d) to ticket ID %d", createdArticle.ID, ticketID)
+	resultData, _ := json.MarshalIndent(createdArticle, "", "  ")
+	return mcp.NewToolResultText(fmt.Sprintf("Email reply sent successfully to ticket %d:\n%s", ticketID, string(resultData))), nil
+}
+
 func handleGetTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	log.Printf("Handling tool call: %s", request.Params.Name)
 	ticketID := mcp.ParseInt(request, "ticket_id", 0)
@@ -357,25 +424,88 @@ func handleGetUser(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallT
 	log.Printf("Handling tool call: %s", request.Params.Name)
 
 	userID := mcp.ParseInt(request, "user_id", 0)
+	withExtendedData := mcp.ParseBoolean(request, "with_extended_data", false)
 
 	if userID <= 0 {
 		return mcp.NewToolResultError("Missing or invalid required argument: user_id (must be a positive number)"), nil
 	}
 
-	user, err := zammadClient.UserShow(userID)
-	if err != nil {
-		log.Printf("Error fetching user %d from Zammad via tool: %v", userID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to get user %d", userID), err), nil
+	var resultData interface{}
+
+	if withExtendedData {
+		// For extended data, make a direct HTTP request to get all fields including custom ones
+		req, err := zammadClient.NewRequest("GET", fmt.Sprintf("%s/api/v1/users/%d", zammadClient.Url, userID), nil)
+		if err != nil {
+			log.Printf("Error creating request for user %d: %v", userID, err)
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to create request for user %d", userID), err), nil
+		}
+
+		// Apply authentication headers manually (matching the client's sendWithAuth logic)
+		if zammadClient.Username != "" && zammadClient.Password != "" {
+			req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+		}
+		if zammadClient.Token != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+		}
+		if zammadClient.OAuth != "" {
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+		}
+
+		// Make the request
+		resp, err := zammadClient.Client.Do(req)
+		if err != nil {
+			log.Printf("Error fetching extended user data for user %d: %v", userID, err)
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to get extended data for user %d", userID), err), nil
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Error response from Zammad for user %d: status %d", userID, resp.StatusCode)
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get user %d: HTTP status %d", userID, resp.StatusCode)), nil
+		}
+
+		// Decode the full response including custom fields
+		var rawUserData map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&rawUserData); err != nil {
+			log.Printf("Error decoding extended user data for user %d: %v", userID, err)
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to decode extended data for user %d", userID), err), nil
+		}
+
+		resultData = rawUserData
+		log.Printf("Successfully retrieved extended data for user ID %d", userID)
+	} else {
+		// For standard data, use the client method which returns only defined fields
+		user, err := zammadClient.UserShow(userID)
+		if err != nil {
+			log.Printf("Error fetching user %d from Zammad: %v", userID, err)
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to get user %d", userID), err), nil
+		}
+
+		// Return only the basic fields
+		resultData = map[string]interface{}{
+			"id":              user.ID,
+			"organization_id": user.OrganizationID,
+			"login":           user.Login,
+			"firstname":       user.Firstname,
+			"lastname":        user.Lastname,
+			"email":           user.Email,
+			"web":             user.Web,
+			"last_login":      user.LastLogin,
+		}
+		log.Printf("Successfully retrieved standard data for user ID %d", userID)
 	}
 
-	log.Printf("Successfully retrieved user ID %d via tool", userID)
-	jsonData, err := json.MarshalIndent(user, "", "  ")
+	jsonData, err := json.MarshalIndent(resultData, "", "  ")
 	if err != nil {
-		log.Printf("Error marshalling user %d to JSON (tool): %v", userID, err)
-		return nil, fmt.Errorf("failed to marshal user %d: %w", userID, err) // Internal server error
+		log.Printf("Error marshalling user %d data to JSON: %v", userID, err)
+		return nil, fmt.Errorf("failed to marshal user %d data: %w", userID, err)
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("User %d details:\n%s", userID, string(jsonData))), nil
+	dataType := "standard"
+	if withExtendedData {
+		dataType = "extended"
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("User %d details (%s data):\n%s", userID, dataType, string(jsonData))), nil
 }
 
 // handleSearchUsers searches Zammad users.
@@ -432,4 +562,50 @@ func handleGetTicketArticles(ctx context.Context, request mcp.CallToolRequest) (
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Ticket %d Articles (%d found):\n%s", ticketID, len(articles), string(jsonData))), nil
+}
+
+func handleCloseTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	ticketID := mcp.ParseInt(request, "ticket_id", 0)
+	note := mcp.ParseString(request, "note", "")
+
+	if ticketID <= 0 {
+		return mcp.NewToolResultError("Missing or invalid required argument: ticket_id (must be a positive number)"), nil
+	}
+
+	// Update the ticket state to "closed"
+	ticket := zammad.Ticket{
+		State: "closed",
+	}
+
+	updatedTicket, err := zammadClient.TicketUpdate(ticketID, ticket)
+	if err != nil {
+		log.Printf("Error closing ticket %d in Zammad: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to close ticket %d", ticketID), err), nil
+	}
+
+	log.Printf("Successfully closed ticket ID %d", ticketID)
+
+	// If a closing note was provided, add it as an internal note
+	if note != "" {
+		article := zammad.TicketArticle{
+			TicketID: ticketID,
+			Body:     note,
+			Type:     "note",
+			Internal: true,
+			Subject:  "Ticket closed",
+		}
+
+		createdArticle, err := zammadClient.TicketArticleCreate(article)
+		if err != nil {
+			log.Printf("Warning: Ticket %d closed successfully, but failed to add closing note: %v", ticketID, err)
+			// Don't fail the whole operation if note creation fails
+		} else {
+			log.Printf("Added closing note (Article ID %d) to ticket ID %d", createdArticle.ID, ticketID)
+		}
+	}
+
+	resultData, _ := json.MarshalIndent(updatedTicket, "", "  ")
+	return mcp.NewToolResultText(fmt.Sprintf("Ticket %d closed successfully:\n%s", ticketID, string(resultData))), nil
 }

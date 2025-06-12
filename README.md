@@ -47,15 +47,22 @@ Tools allow the AI to perform actions or specific queries within Zammad.
 *   **`add_note_to_ticket`**: Adds an internal note (article) to an existing ticket.
     *   Requires: `ticket_id`, `body`.
     *   Optional: `internal` (boolean, default: true).
+*   **`reply_to_ticket`**: Reply to a ticket by email.
+    *   Requires: `ticket_id`, `body`.
+    *   Optional: `to` (recipient email, defaults to ticket customer), `cc`, `subject` (defaults to "Re: [ticket title]"), `internal` (boolean, default: false).
 *   **`get_ticket`**: Retrieves details for a specific ticket by its ID.
     *   Requires: `ticket_id`.
 *   **`get_user`**: Retrieves details for a specific user by their ID.
     *   Requires: `user_id`.
+    *   Optional: `with_extended_data` (boolean, default: false). If true, returns all user fields including custom fields. If false, returns only standard fields.
 *   **`search_users`**: Searches for users based on a query string (e.g., email, login, name).
     *   Requires: `query`.
     *   Optional: `limit` (default: 50).
 *   **`get_ticket_articles`**: Retrieves all articles (communications) for a specific ticket.
     *   Requires: `ticket_id`.
+*   **`close_ticket`**: Close a ticket by setting its state to 'closed'.
+    *   Requires: `ticket_id`.
+    *   Optional: `note` (a closing note to add to the ticket as an internal note).
 
 ## Prerequisites
 
