@@ -20,6 +20,21 @@ var (
 	ErrResourceNotFound error = errors.New("resource not found")
 )
 
+// TextModule represents a Zammad text module
+type TextModule struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Keywords  string `json:"keywords"`
+	Content   string `json:"content"`
+	Note      string `json:"note"`
+	Active    bool   `json:"active"`
+	GroupIDs  []int  `json:"group_ids"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	CreatedBy int    `json:"created_by_id"`
+	UpdatedBy int    `json:"updated_by_id"`
+}
+
 var zammadClient *zammad.Client
 
 func main() {
@@ -316,6 +331,24 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("search_term", mcp.Required(), mcp.Description("The search term to look for in tag names.")),
 	)
 	s.AddTool(searchTagsTool, handleSearchTags)
+
+	// Text module tools
+	listTextModulesTool := mcp.NewTool("list_text_modules",
+		mcp.WithDescription("List all text modules available in the Zammad system."),
+	)
+	s.AddTool(listTextModulesTool, handleListTextModules)
+
+	getTextModuleTool := mcp.NewTool("get_text_module",
+		mcp.WithDescription("Get details of a specific text module by ID."),
+		mcp.WithNumber("text_module_id", mcp.Required(), mcp.Description("The ID of the text module to retrieve.")),
+	)
+	s.AddTool(getTextModuleTool, handleGetTextModule)
+
+	searchTextModulesTool := mcp.NewTool("search_text_modules",
+		mcp.WithDescription("Search for text modules by name or content."),
+		mcp.WithString("search_term", mcp.Required(), mcp.Description("The search term to look for in text module names or content.")),
+	)
+	s.AddTool(searchTextModulesTool, handleSearchTextModules)
 
 	// Add create_user, update_user, delete_user tools here if needed
 }
@@ -934,4 +967,217 @@ func handleSearchTags(ctx context.Context, request mcp.CallToolRequest) (*mcp.Ca
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Tags matching '%s' (%d found):\n%s", searchTerm, len(tags), string(resultData))), nil
+}
+
+// Text Module handlers
+
+// handleListTextModules retrieves all text modules
+func handleListTextModules(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	req, err := zammadClient.NewRequest("GET", fmt.Sprintf("%s/api/v1/text_modules", zammadClient.Url), nil)
+	if err != nil {
+		log.Printf("Error creating request for text modules: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to create request for text modules", err), nil
+	}
+
+	// Apply authentication headers
+	if zammadClient.Username != "" && zammadClient.Password != "" {
+		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+	}
+	if zammadClient.Token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+	}
+	if zammadClient.OAuth != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+	}
+
+	resp, err := zammadClient.Client.Do(req)
+	if err != nil {
+		log.Printf("Error fetching text modules: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to fetch text modules", err), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error response when fetching text modules: Status %d", resp.StatusCode)
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch text modules: HTTP %d", resp.StatusCode)), nil
+	}
+
+	var textModules []TextModule
+	if err := json.NewDecoder(resp.Body).Decode(&textModules); err != nil {
+		log.Printf("Error decoding text modules response: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to decode text modules response", err), nil
+	}
+
+	if len(textModules) == 0 {
+		return mcp.NewToolResultText("No text modules found"), nil
+	}
+
+	resultData, err := json.MarshalIndent(textModules, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling text modules: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to format text modules", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Text modules (%d found):\n%s", len(textModules), string(resultData))), nil
+}
+
+// handleGetTextModule retrieves a specific text module by ID
+func handleGetTextModule(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	textModuleID := mcp.ParseInt(request, "text_module_id", 0)
+	if textModuleID <= 0 {
+		return mcp.NewToolResultError("Missing or invalid required argument: text_module_id (must be positive)"), nil
+	}
+
+	req, err := zammadClient.NewRequest("GET", fmt.Sprintf("%s/api/v1/text_modules/%d", zammadClient.Url, textModuleID), nil)
+	if err != nil {
+		log.Printf("Error creating request for text module %d: %v", textModuleID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to create request for text module %d", textModuleID), err), nil
+	}
+
+	// Apply authentication headers
+	if zammadClient.Username != "" && zammadClient.Password != "" {
+		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+	}
+	if zammadClient.Token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+	}
+	if zammadClient.OAuth != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+	}
+
+	resp, err := zammadClient.Client.Do(req)
+	if err != nil {
+		log.Printf("Error fetching text module %d: %v", textModuleID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to fetch text module %d", textModuleID), err), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return mcp.NewToolResultError(fmt.Sprintf("Text module %d not found", textModuleID)), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error response when fetching text module %d: Status %d", textModuleID, resp.StatusCode)
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch text module %d: HTTP %d", textModuleID, resp.StatusCode)), nil
+	}
+
+	var textModule TextModule
+	if err := json.NewDecoder(resp.Body).Decode(&textModule); err != nil {
+		log.Printf("Error decoding text module %d response: %v", textModuleID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to decode text module %d response", textModuleID), err), nil
+	}
+
+	resultData, err := json.MarshalIndent(textModule, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling text module %d: %v", textModuleID, err)
+		return mcp.NewToolResultErrorFromErr("Failed to format text module", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Text module %d:\n%s", textModuleID, string(resultData))), nil
+}
+
+// handleSearchTextModules searches for text modules by name or content
+func handleSearchTextModules(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	log.Printf("Handling tool call: %s", request.Params.Name)
+
+	searchTerm := mcp.ParseString(request, "search_term", "")
+	if searchTerm == "" {
+		return mcp.NewToolResultError("Missing required argument: search_term"), nil
+	}
+
+	// Get all text modules first, then filter them
+	req, err := zammadClient.NewRequest("GET", fmt.Sprintf("%s/api/v1/text_modules", zammadClient.Url), nil)
+	if err != nil {
+		log.Printf("Error creating request for text modules search: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to create request for text modules search", err), nil
+	}
+
+	// Apply authentication headers
+	if zammadClient.Username != "" && zammadClient.Password != "" {
+		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+	}
+	if zammadClient.Token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+	}
+	if zammadClient.OAuth != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+	}
+
+	resp, err := zammadClient.Client.Do(req)
+	if err != nil {
+		log.Printf("Error fetching text modules for search: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to fetch text modules for search", err), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error response when fetching text modules for search: Status %d", resp.StatusCode)
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to fetch text modules for search: HTTP %d", resp.StatusCode)), nil
+	}
+
+	var allTextModules []TextModule
+	if err := json.NewDecoder(resp.Body).Decode(&allTextModules); err != nil {
+		log.Printf("Error decoding text modules search response: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to decode text modules search response", err), nil
+	}
+
+	// Filter text modules by search term (case-insensitive search in name, keywords, and content)
+	var matchingModules []TextModule
+
+	for _, module := range allTextModules {
+		if containsIgnoreCase(module.Name, searchTerm) ||
+			containsIgnoreCase(module.Keywords, searchTerm) ||
+			containsIgnoreCase(module.Content, searchTerm) {
+			matchingModules = append(matchingModules, module)
+		}
+	}
+
+	if len(matchingModules) == 0 {
+		return mcp.NewToolResultText(fmt.Sprintf("No text modules found matching search term '%s'", searchTerm)), nil
+	}
+
+	resultData, err := json.MarshalIndent(matchingModules, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling text modules search results: %v", err)
+		return mcp.NewToolResultErrorFromErr("Failed to format text modules search results", err), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Text modules matching '%s' (%d found):\n%s", searchTerm, len(matchingModules), string(resultData))), nil
+}
+
+// Helper function for case-insensitive string contains
+func containsIgnoreCase(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+
+	// Simple case-insensitive search
+	sLower := toLower(s)
+	substrLower := toLower(substr)
+
+	for i := 0; i <= len(sLower)-len(substrLower); i++ {
+		if sLower[i:i+len(substrLower)] == substrLower {
+			return true
+		}
+	}
+	return false
+}
+
+// Simple toLower function for ASCII characters
+func toLower(s string) string {
+	result := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			result[i] = s[i] + 32
+		} else {
+			result[i] = s[i]
+		}
+	}
+	return string(result)
 }

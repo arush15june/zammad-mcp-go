@@ -75,6 +75,15 @@ Tools allow the AI to perform actions or specific queries within Zammad.
 *   **`search_tags`**: Search for tags by name in the Zammad system.
     *   Requires: `search_term`.
 
+### Text Module Tools
+
+*   **`list_text_modules`**: List all text modules available in the Zammad system.
+    *   No parameters required.
+*   **`get_text_module`**: Get details of a specific text module by ID.
+    *   Requires: `text_module_id`.
+*   **`search_text_modules`**: Search for text modules by name, keywords, or content.
+    *   Requires: `search_term`.
+
 ## Prerequisites
 
 *   **Go:** Version 1.24 or higher installed.
