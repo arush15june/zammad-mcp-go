@@ -47,15 +47,42 @@ Tools allow the AI to perform actions or specific queries within Zammad.
 *   **`add_note_to_ticket`**: Adds an internal note (article) to an existing ticket.
     *   Requires: `ticket_id`, `body`.
     *   Optional: `internal` (boolean, default: true).
+*   **`reply_to_ticket`**: Reply to a ticket by email.
+    *   Requires: `ticket_id`, `body`.
+    *   Optional: `to` (recipient email, defaults to ticket customer), `cc`, `subject` (defaults to "Re: [ticket title]"), `internal` (boolean, default: false).
 *   **`get_ticket`**: Retrieves details for a specific ticket by its ID.
     *   Requires: `ticket_id`.
 *   **`get_user`**: Retrieves details for a specific user by their ID.
     *   Requires: `user_id`.
+    *   Optional: `with_extended_data` (boolean, default: false). If true, returns all user fields including custom fields. If false, returns only standard fields.
 *   **`search_users`**: Searches for users based on a query string (e.g., email, login, name).
     *   Requires: `query`.
     *   Optional: `limit` (default: 50).
 *   **`get_ticket_articles`**: Retrieves all articles (communications) for a specific ticket.
     *   Requires: `ticket_id`.
+*   **`close_ticket`**: Close a ticket by setting its state to 'closed'.
+    *   Requires: `ticket_id`.
+    *   Optional: `note` (a closing note to add to the ticket as an internal note).
+*   **`assign_ticket`**: Assign a ticket to a specific agent user.
+    *   Requires: `ticket_id`, `agent_id`.
+    *   Optional: `note` (an assignment note to add to the ticket as an internal note).
+*   **`add_tag_to_ticket`**: Add a tag to a ticket.
+    *   Requires: `ticket_id`, `tag_name`.
+*   **`get_ticket_tags`**: Get all tags currently assigned to a specific ticket.
+    *   Requires: `ticket_id`.
+*   **`list_all_tags`**: List all tags available in the Zammad system.
+    *   Requires: `admin.tag` permission.
+*   **`search_tags`**: Search for tags by name in the Zammad system.
+    *   Requires: `search_term`.
+
+### Text Module Tools
+
+*   **`list_text_modules`**: List all text modules available in the Zammad system.
+    *   No parameters required.
+*   **`get_text_module`**: Get details of a specific text module by ID.
+    *   Requires: `text_module_id`.
+*   **`search_text_modules`**: Search for text modules by name, keywords, or content.
+    *   Requires: `search_term`.
 
 ## Prerequisites
 
