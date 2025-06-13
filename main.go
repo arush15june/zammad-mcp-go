@@ -289,7 +289,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithDescription("Assign a Zammad ticket to a specific agent user."),
 		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to assign.")),
 		mcp.WithNumber("agent_id", mcp.Required(), mcp.Description("The ID of the agent user to assign the ticket to.")),
-		mcp.WithString("note", mcp.Description("Optional note to add when assigning the ticket.")),
+		mcp.WithString("note", mcp.Description("Optional note to add when assigning the ticket ** not required **.")),
 	)
 	s.AddTool(assignTicketTool, handleAssignTicket)
 
@@ -688,21 +688,45 @@ func handleAssignTicket(ctx context.Context, request mcp.CallToolRequest) (*mcp.
 		return mcp.NewToolResultError("Missing or invalid required arguments: ticket_id and agent_id (both must be positive numbers)"), nil
 	}
 
-	// First, get the current ticket to preserve existing data
-	currentTicket, err := zammadClient.TicketShow(ticketID)
-	if err != nil {
-		log.Printf("Error fetching current ticket %d: %v", ticketID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to fetch ticket %d", ticketID), err), nil
+	// Update the ticket owner using a direct API call to avoid validation errors
+	// We only send the owner_id field that needs to be updated
+	updateData := map[string]interface{}{
+		"owner_id": agentID,
 	}
 
-	// Update only the owner_id field, preserving other ticket data
-	currentTicket.OwnerID = agentID
-
-	// Use the Zammad client's TicketUpdate method instead of manual API call
-	updatedTicket, err := zammadClient.TicketUpdate(ticketID, currentTicket)
+	req, err := zammadClient.NewRequest("PUT", fmt.Sprintf("%s/api/v1/tickets/%d", zammadClient.Url, ticketID), updateData)
 	if err != nil {
-		log.Printf("Error assigning ticket %d to agent %d: %v", ticketID, agentID, err)
-		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to assign ticket %d to agent %d", ticketID, agentID), err), nil
+		log.Printf("Error creating request to assign ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to create request to assign ticket %d", ticketID), err), nil
+	}
+
+	// Apply authentication headers manually (matching the client's sendWithAuth logic)
+	if zammadClient.Username != "" && zammadClient.Password != "" {
+		req.SetBasicAuth(zammadClient.Username, zammadClient.Password)
+	}
+	if zammadClient.Token != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Token token=%s", zammadClient.Token))
+	}
+	if zammadClient.OAuth != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", zammadClient.OAuth))
+	}
+
+	resp, err := zammadClient.Client.Do(req)
+	if err != nil {
+		log.Printf("Error sending request to assign ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to send request to assign ticket %d", ticketID), err), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Error response when assigning ticket %d: Status %d", ticketID, resp.StatusCode)
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to assign ticket %d: HTTP %d", ticketID, resp.StatusCode)), nil
+	}
+
+	var updatedTicket zammad.Ticket
+	if err := json.NewDecoder(resp.Body).Decode(&updatedTicket); err != nil {
+		log.Printf("Error decoding response when assigning ticket %d: %v", ticketID, err)
+		return mcp.NewToolResultErrorFromErr(fmt.Sprintf("Failed to decode response when assigning ticket %d", ticketID), err), nil
 	}
 
 	log.Printf("Successfully assigned ticket ID %d to agent ID %d", ticketID, agentID)
