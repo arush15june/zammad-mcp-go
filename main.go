@@ -229,13 +229,30 @@ func handleShowUser(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp
 
 func registerTools(s *server.MCPServer) {
 	// --- Ticket Tools ---
-	createTicketTool := mcp.NewTool("create_ticket" /* ... */)
+	createTicketTool := mcp.NewTool("create_ticket",
+		mcp.WithDescription("Creates a new Zammad ticket with the specified details."),
+		mcp.WithString("title", mcp.Required(), mcp.Description("The title of the ticket.")),
+		mcp.WithString("group", mcp.Required(), mcp.Description("The group/department for the ticket.")),
+		mcp.WithString("customer", mcp.Required(), mcp.Description("The customer email or ID for the ticket.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("The initial message/content of the ticket.")),
+		mcp.WithString("type", mcp.Description("The article type (e.g., 'note', 'email'). Default: 'note'."), mcp.DefaultString("note")),
+		mcp.WithBoolean("internal", mcp.Description("Whether the article is internal. Default: false."), mcp.DefaultBoolean(false)),
+	)
 	s.AddTool(createTicketTool, handleCreateTicket)
 
-	searchTicketsTool := mcp.NewTool("search_tickets" /* ... */)
+	searchTicketsTool := mcp.NewTool("search_tickets",
+		mcp.WithDescription("Searches for Zammad tickets based on a query string."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("The search query string to find tickets.")),
+		mcp.WithNumber("limit", mcp.Description("Maximum number of results to return. Default: 50."), mcp.DefaultNumber(50)),
+	)
 	s.AddTool(searchTicketsTool, handleSearchTickets)
 
-	addNoteTool := mcp.NewTool("add_note_to_ticket" /* ... */)
+	addNoteTool := mcp.NewTool("add_note_to_ticket",
+		mcp.WithDescription("Adds a note/comment to an existing Zammad ticket."),
+		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to add a note to.")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("The content of the note to add.")),
+		mcp.WithBoolean("internal", mcp.Description("Whether the note is internal. Default: true."), mcp.DefaultBoolean(true)),
+	)
 	s.AddTool(addNoteTool, handleAddNoteToTicket)
 
 	getTicketTool := mcp.NewTool("get_ticket",
@@ -244,19 +261,19 @@ func registerTools(s *server.MCPServer) {
 	)
 	s.AddTool(getTicketTool, handleGetTicket)
 
-	// --- User Tools --- <--- NEW TOOLS REGISTERED HERE
+	// --- User Tools ---
 	getUserTool := mcp.NewTool("get_user",
 		mcp.WithDescription("Retrieves details for a specific Zammad user by their ID."),
 		mcp.WithNumber("user_id", mcp.Required(), mcp.Description("The ID of the user to retrieve.")),
 	)
-	s.AddTool(getUserTool, handleGetUser) // Register the new handler
+	s.AddTool(getUserTool, handleGetUser)
 
 	searchUsersTool := mcp.NewTool("search_users",
 		mcp.WithDescription("Searches for Zammad users based on a query string (e.g., email, login, name)."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("The search query string.")),
 		mcp.WithNumber("limit", mcp.Description("Maximum number of results. Default: 50."), mcp.DefaultNumber(50)),
 	)
-	s.AddTool(searchUsersTool, handleSearchUsers) // Register the new handler
+	s.AddTool(searchUsersTool, handleSearchUsers)
 
 	getTicketArticlesTool := mcp.NewTool("get_ticket_articles",
 		mcp.WithDescription("Retrieves all articles (communications) for a specific Zammad ticket."),
