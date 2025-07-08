@@ -236,7 +236,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("customer", mcp.Required(), mcp.Description("The customer email or ID for the ticket.")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("The initial message/content of the ticket.")),
 		mcp.WithString("type", mcp.Description("The article type (e.g., 'note', 'email'). Default: 'note'."), mcp.DefaultString("note")),
-		mcp.WithBoolean("internal", mcp.Description("Whether the article is internal. Default: false."), mcp.DefaultBoolean(false)),
+		mcp.WithBoolean("internal", mcp.Description("Whether the article is internal. Default: false."), mcp.DefaultBool(false)),
 	)
 	s.AddTool(createTicketTool, handleCreateTicket)
 
@@ -251,7 +251,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithDescription("Adds a note/comment to an existing Zammad ticket."),
 		mcp.WithNumber("ticket_id", mcp.Required(), mcp.Description("The ID of the ticket to add a note to.")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("The content of the note to add.")),
-		mcp.WithBoolean("internal", mcp.Description("Whether the note is internal. Default: true."), mcp.DefaultBoolean(true)),
+		mcp.WithBoolean("internal", mcp.Description("Whether the note is internal. Default: true."), mcp.DefaultBool(true)),
 	)
 	s.AddTool(addNoteTool, handleAddNoteToTicket)
 
